@@ -18,6 +18,8 @@ In SteamDeck game mode, when using the browser or video player, SteamDeck will a
 
 This plugin registers and monitors the missing D-Bus services in game mode, automatically preventing the system from suspending when receiving a request from a application. And restore the default settings when the application closes or cancels the request (dimming: 5 minutes, suspending: 10 minutes)
 
+**Desktop Mode Compatibility:** The plugin now intelligently detects when D-Bus services are already provided by KDE (or other desktop environments) in desktop mode and will not register conflicting interfaces. This prevents conflicts between the plugin and the desktop environment's native power management services.
+
 
 ### Compatible application
 - [x] VLC
