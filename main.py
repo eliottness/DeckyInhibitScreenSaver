@@ -117,21 +117,63 @@ async def stop_dbus():
     except Exception as e:
         decky_plugin.logger.info(f"error: {e}")
 
+async def is_service_owned(service_name):
+    """Check if a D-Bus service name is already owned by another process"""
+    global bus
+    try:
+        message = Message(
+            destination='org.freedesktop.DBus',
+            path='/org/freedesktop/DBus',
+            interface='org.freedesktop.DBus',
+            member='NameHasOwner',
+            signature='s',
+            body=[service_name]
+        )
+        reply = await bus.call(message)
+        if reply.message_type == MessageType.ERROR:
+            return False
+        return reply.body[0] if reply.body else False
+    except Exception as e:
+        decky_plugin.logger.info(f"Error checking service ownership for {service_name}: {e}")
+        return False
+
 async def start_dbus():
     global bus
     await stop_dbus()
     try:
         bus = await MessageBus().connect()
-        interface = InhibitInterface()
-        pm_interface = PMInhibitInterface()
-        gnome_interface = GnomeInterface()
-        bus.export('/ScreenSaver', interface) # vlc
-        bus.export('/org/freedesktop/ScreenSaver', interface) # chrome
-        bus.export('/org/freedesktop/PowerManagement/Inhibit', pm_interface) # wiliwili
-        bus.export('/org/gnome/SessionManager', gnome_interface) # mpv with https://github.com/Guldoman/mpv_inhibit_gnome installed
-        await bus.request_name('org.freedesktop.PowerManagement')
-        await bus.request_name('org.freedesktop.ScreenSaver')
-        await bus.request_name('org.gnome.SessionManager')
+        
+        # Check which services are already owned (e.g., by KDE in desktop mode)
+        screensaver_owned = await is_service_owned('org.freedesktop.ScreenSaver')
+        powermanagement_owned = await is_service_owned('org.freedesktop.PowerManagement')
+        gnome_owned = await is_service_owned('org.gnome.SessionManager')
+        
+        # Only export interfaces and request names for services that are not already owned
+        if not screensaver_owned:
+            interface = InhibitInterface()
+            bus.export('/ScreenSaver', interface) # vlc
+            bus.export('/org/freedesktop/ScreenSaver', interface) # chrome
+            await bus.request_name('org.freedesktop.ScreenSaver')
+            decky_plugin.logger.info("Registered org.freedesktop.ScreenSaver service")
+        else:
+            decky_plugin.logger.info("org.freedesktop.ScreenSaver already owned, skipping registration")
+        
+        if not powermanagement_owned:
+            pm_interface = PMInhibitInterface()
+            bus.export('/org/freedesktop/PowerManagement/Inhibit', pm_interface) # wiliwili
+            await bus.request_name('org.freedesktop.PowerManagement')
+            decky_plugin.logger.info("Registered org.freedesktop.PowerManagement service")
+        else:
+            decky_plugin.logger.info("org.freedesktop.PowerManagement already owned, skipping registration")
+        
+        if not gnome_owned:
+            gnome_interface = GnomeInterface()
+            bus.export('/org/gnome/SessionManager', gnome_interface) # mpv with https://github.com/Guldoman/mpv_inhibit_gnome installed
+            await bus.request_name('org.gnome.SessionManager')
+            decky_plugin.logger.info("Registered org.gnome.SessionManager service")
+        else:
+            decky_plugin.logger.info("org.gnome.SessionManager already owned, skipping registration")
+            
     except Exception as e:
         decky_plugin.logger.info(f"error: {e}")
 
