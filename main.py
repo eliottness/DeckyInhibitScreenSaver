@@ -108,6 +108,28 @@ class GnomeInterface(BaseInterface):
     async def Uninhibit(self, cookie: 'u'):
         return await self._un_inhibit_impl(cookie)
 
+class PortalInhibitInterface(BaseInterface):
+    def __init__(self):
+        super().__init__('org.freedesktop.portal.Inhibit')
+    
+    @method()
+    async def Inhibit(self, window: 's', flags: 'u', options: 'a{sv}') -> 'o':
+        # Extract application name from options if available
+        application = "Firefox"
+        reason = "video playback"
+        
+        # Check if options contains app_id or reason
+        if options:
+            if 'app_id' in options:
+                application = str(options['app_id'].value)
+            if 'reason' in options:
+                reason = str(options['reason'].value)
+        
+        cookie = await self._inhibit_impl(application, reason)
+        # Return an object path as required by the portal interface
+        # The path includes the cookie for later reference
+        return f'/org/freedesktop/portal/desktop/request/{cookie}'
+
 async def stop_dbus():
     global bus
     try:
@@ -125,13 +147,16 @@ async def start_dbus():
         interface = InhibitInterface()
         pm_interface = PMInhibitInterface()
         gnome_interface = GnomeInterface()
+        portal_interface = PortalInhibitInterface()
         bus.export('/ScreenSaver', interface) # vlc
         bus.export('/org/freedesktop/ScreenSaver', interface) # chrome
         bus.export('/org/freedesktop/PowerManagement/Inhibit', pm_interface) # wiliwili
         bus.export('/org/gnome/SessionManager', gnome_interface) # mpv with https://github.com/Guldoman/mpv_inhibit_gnome installed
+        bus.export('/org/freedesktop/portal/desktop', portal_interface) # firefox
         await bus.request_name('org.freedesktop.PowerManagement')
         await bus.request_name('org.freedesktop.ScreenSaver')
         await bus.request_name('org.gnome.SessionManager')
+        await bus.request_name('org.freedesktop.portal.Desktop')
     except Exception as e:
         decky_plugin.logger.info(f"error: {e}")
 
