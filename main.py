@@ -23,11 +23,12 @@ settings = SettingsManager(name="settings", settings_directory=settings_dir)
 event_queue = queue.Queue()
 
 from dbus_next.aio import MessageBus
-from dbus_next import Message, MessageType
+from dbus_next import Message, MessageType, BusType
 from dbus_next.service import ServiceInterface, method, dbus_property, signal
 bus = None
 registered_services = set()  # Track which services we have registered
 last_desktop_mode = None  # Track the last known desktop mode state
+name_owner_watch_rules = []  # Track D-Bus match rules we've added
 
 class AppRequest:
     def __init__(self, sender, cookie, application, reason):
@@ -111,15 +112,31 @@ class GnomeInterface(BaseInterface):
         return await self._un_inhibit_impl(cookie)
 
 async def stop_dbus():
-    global bus, registered_services, last_desktop_mode
+    global bus, registered_services, last_desktop_mode, name_owner_watch_rules
     try:
         if bus is not None:
+            # Remove match rules
+            for rule in name_owner_watch_rules:
+                try:
+                    msg = Message(
+                        destination='org.freedesktop.DBus',
+                        path='/org/freedesktop/DBus',
+                        interface='org.freedesktop.DBus',
+                        member='RemoveMatch',
+                        signature='s',
+                        body=[rule]
+                    )
+                    await bus.call(msg)
+                except Exception as e:
+                    decky_plugin.logger.info(f"Error removing match rule: {e}")
+            
             # Unregister services before disconnecting
             await unregister_dbus_services()
             bus.disconnect()
         bus = None
         registered_services = set()
         last_desktop_mode = None
+        name_owner_watch_rules = []
     except Exception as e:
         decky_plugin.logger.info(f"error: {e}")
 
@@ -165,6 +182,34 @@ async def is_desktop_mode():
     except Exception as e:
         decky_plugin.logger.info(f"Error checking desktop mode: {e}")
         return False
+
+def handle_name_owner_changed(name, old_owner, new_owner):
+    """
+    Callback for D-Bus NameOwnerChanged signals.
+    This detects when KDE services are starting (before they register conflicting services).
+    """
+    global bus, registered_services, last_desktop_mode
+    
+    # KDE services that indicate desktop mode
+    kde_services = [
+        'org.kde.plasmashell',
+        'org.kde.KWin', 
+        'org.kde.Solid.PowerManagement'
+    ]
+    
+    # Check if a KDE service is starting (new_owner is not empty)
+    if name in kde_services and new_owner and not old_owner:
+        decky_plugin.logger.info(f"KDE service {name} starting, immediately releasing our D-Bus services")
+        # Schedule immediate release of our services
+        import asyncio
+        if bus is not None:
+            asyncio.create_task(unregister_dbus_services())
+            last_desktop_mode = True
+    
+    # Check if KDE services are stopping (new_owner is empty and old_owner existed)
+    elif name in kde_services and old_owner and not new_owner:
+        decky_plugin.logger.info(f"KDE service {name} stopped")
+        # Will be handled by check_and_manage_services which verifies all KDE services are gone
 
 async def register_dbus_services():
     """Register D-Bus services for gaming mode"""
@@ -256,13 +301,78 @@ async def check_and_manage_services():
     except Exception as e:
         decky_plugin.logger.info(f"Error in check_and_manage_services: {e}")
 
+async def setup_kde_service_monitoring():
+    """
+    Set up D-Bus signal monitoring to detect when KDE services start.
+    This allows us to release our services BEFORE KDE tries to register conflicting ones.
+    """
+    global bus, name_owner_watch_rules
+    
+    if bus is None:
+        return
+    
+    try:
+        # KDE services to monitor
+        kde_services = [
+            'org.kde.plasmashell',
+            'org.kde.KWin',
+            'org.kde.Solid.PowerManagement'
+        ]
+        
+        # Subscribe to NameOwnerChanged signals for each KDE service
+        for service_name in kde_services:
+            # Add match rule for this specific service
+            rule = f"type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='{service_name}'"
+            
+            try:
+                # Add the match rule
+                msg = Message(
+                    destination='org.freedesktop.DBus',
+                    path='/org/freedesktop/DBus',
+                    interface='org.freedesktop.DBus',
+                    member='AddMatch',
+                    signature='s',
+                    body=[rule]
+                )
+                await bus.call(msg)
+                name_owner_watch_rules.append(rule)
+                decky_plugin.logger.info(f"Monitoring for {service_name} startup")
+            except Exception as e:
+                decky_plugin.logger.info(f"Error adding match rule for {service_name}: {e}")
+        
+        # Subscribe to the NameOwnerChanged signal
+        bus.add_message_handler(handle_name_owner_changed_message)
+        
+    except Exception as e:
+        decky_plugin.logger.info(f"Error setting up KDE monitoring: {e}")
+
+def handle_name_owner_changed_message(msg):
+    """Handle NameOwnerChanged D-Bus messages"""
+    try:
+        if (msg.message_type == MessageType.SIGNAL and
+            msg.interface == 'org.freedesktop.DBus' and
+            msg.member == 'NameOwnerChanged'):
+            
+            if msg.body and len(msg.body) >= 3:
+                name = msg.body[0]
+                old_owner = msg.body[1]
+                new_owner = msg.body[2]
+                handle_name_owner_changed(name, old_owner, new_owner)
+    except Exception as e:
+        decky_plugin.logger.info(f"Error handling NameOwnerChanged: {e}")
+
 async def start_dbus():
-    global bus, registered_services, last_desktop_mode
+    global bus, registered_services, last_desktop_mode, name_owner_watch_rules
     await stop_dbus()
     registered_services = set()
     last_desktop_mode = None
+    name_owner_watch_rules = []
     try:
         bus = await MessageBus().connect()
+        
+        # Set up monitoring for KDE service startup BEFORE registering our services
+        await setup_kde_service_monitoring()
+        
         # Always register services at startup (system starts in gaming mode)
         await register_dbus_services()
     except Exception as e:
