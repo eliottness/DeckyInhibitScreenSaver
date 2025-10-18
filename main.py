@@ -138,7 +138,6 @@ class PortalInhibitInterface(BaseInterface):
     
     @method()
     async def Inhibit(self, window: 's', flags: 'u', options: 'a{sv}') -> 'o':
-        global bus
         # Extract application name from options if available
         application = "Firefox"
         reason = "video playback"
