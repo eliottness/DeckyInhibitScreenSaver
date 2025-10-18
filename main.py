@@ -108,12 +108,37 @@ class GnomeInterface(BaseInterface):
     async def Uninhibit(self, cookie: 'u'):
         return await self._un_inhibit_impl(cookie)
 
+class PortalRequestInterface(ServiceInterface):
+    """Implements org.freedesktop.portal.Request for handling inhibit request lifecycle"""
+    def __init__(self, cookie):
+        super().__init__('org.freedesktop.portal.Request')
+        self.cookie = cookie
+    
+    @method()
+    async def Close(self):
+        """Called by the client to cancel the inhibit request"""
+        global bus
+        decky_plugin.logger.info(f'Portal Request Close called for cookie={self.cookie}')
+        # Remove the inhibit request
+        if BaseInterface.request_map.pop(self.cookie, None) is None:
+            decky_plugin.logger.info(f'cannot find cookie={self.cookie}')
+        if len(BaseInterface.request_map) == 0:
+            event_queue.put({"type": "UnInhibit"})
+        # Unexport this request object
+        if bus is not None:
+            path = f'/org/freedesktop/portal/desktop/request/{self.cookie}'
+            try:
+                bus.unexport(path)
+            except Exception as e:
+                decky_plugin.logger.info(f'Error unexporting request object: {e}')
+
 class PortalInhibitInterface(BaseInterface):
     def __init__(self):
         super().__init__('org.freedesktop.portal.Inhibit')
     
     @method()
     async def Inhibit(self, window: 's', flags: 'u', options: 'a{sv}') -> 'o':
+        global bus
         # Extract application name from options if available
         application = "Firefox"
         reason = "video playback"
@@ -126,9 +151,12 @@ class PortalInhibitInterface(BaseInterface):
                 reason = str(options['reason'].value)
         
         cookie = await self._inhibit_impl(application, reason)
-        # Return an object path as required by the portal interface
-        # The path includes the cookie for later reference
-        return f'/org/freedesktop/portal/desktop/request/{cookie}'
+        # Create and export a Request object for this inhibit session
+        request_path = f'/org/freedesktop/portal/desktop/request/{cookie}'
+        request_interface = PortalRequestInterface(cookie)
+        bus.export(request_path, request_interface)
+        # Return the object path as required by the portal interface
+        return request_path
 
 async def stop_dbus():
     global bus
