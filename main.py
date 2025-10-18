@@ -117,7 +117,6 @@ class PortalRequestInterface(ServiceInterface):
     @method()
     async def Close(self):
         """Called by the client to cancel the inhibit request"""
-        global bus
         decky_plugin.logger.info(f'Portal Request Close called for cookie={self.cookie}')
         # Remove the inhibit request
         if BaseInterface.request_map.pop(self.cookie, None) is None:
