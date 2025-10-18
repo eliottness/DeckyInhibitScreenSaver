@@ -24,6 +24,7 @@ event_queue = queue.Queue()
 
 from dbus_next.aio import MessageBus
 from dbus_next import Message, MessageType, BusType
+from dbus_next.constants import NameFlag
 from dbus_next.service import ServiceInterface, method, dbus_property, signal
 bus = None
 registered_services = set()  # Track which services we have registered
@@ -219,23 +220,23 @@ async def register_dbus_services():
             interface = InhibitInterface()
             bus.export('/ScreenSaver', interface) # vlc
             bus.export('/org/freedesktop/ScreenSaver', interface) # chrome
-            await bus.request_name('org.freedesktop.ScreenSaver')
+            await bus.request_name('org.freedesktop.ScreenSaver', NameFlag.ALLOW_REPLACEMENT)
             registered_services.add('screensaver')
-            decky_plugin.logger.info("Registered org.freedesktop.ScreenSaver service")
+            decky_plugin.logger.info("Registered org.freedesktop.ScreenSaver service (with ALLOW_REPLACEMENT)")
         
         if 'powermanagement' not in registered_services:
             pm_interface = PMInhibitInterface()
             bus.export('/org/freedesktop/PowerManagement/Inhibit', pm_interface) # wiliwili
-            await bus.request_name('org.freedesktop.PowerManagement')
+            await bus.request_name('org.freedesktop.PowerManagement', NameFlag.ALLOW_REPLACEMENT)
             registered_services.add('powermanagement')
-            decky_plugin.logger.info("Registered org.freedesktop.PowerManagement service")
+            decky_plugin.logger.info("Registered org.freedesktop.PowerManagement service (with ALLOW_REPLACEMENT)")
         
         if 'gnome' not in registered_services:
             gnome_interface = GnomeInterface()
             bus.export('/org/gnome/SessionManager', gnome_interface) # mpv with https://github.com/Guldoman/mpv_inhibit_gnome installed
-            await bus.request_name('org.gnome.SessionManager')
+            await bus.request_name('org.gnome.SessionManager', NameFlag.ALLOW_REPLACEMENT)
             registered_services.add('gnome')
-            decky_plugin.logger.info("Registered org.gnome.SessionManager service")
+            decky_plugin.logger.info("Registered org.gnome.SessionManager service (with ALLOW_REPLACEMENT)")
     except Exception as e:
         decky_plugin.logger.info(f"Error registering services: {e}")
 

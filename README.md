@@ -18,7 +18,7 @@ In SteamDeck game mode, when using the browser or video player, SteamDeck will a
 
 This plugin registers and monitors the missing D-Bus services in game mode, automatically preventing the system from suspending when receiving a request from a application. And restore the default settings when the application closes or cancels the request (dimming: 5 minutes, suspending: 10 minutes)
 
-**Desktop Mode Compatibility:** The plugin uses D-Bus signal monitoring to detect when KDE services are starting and proactively releases its own D-Bus services before conflicts occur. When KDE Plasma launches, the plugin receives NameOwnerChanged signals and immediately unregisters its services, allowing KDE to register its native power management services without conflicts. When returning to gaming mode, the services are automatically re-registered.
+**Desktop Mode Compatibility:** The plugin registers D-Bus services with the `ALLOW_REPLACEMENT` flag, which allows KDE to seamlessly take over the service names when switching to desktop mode. This flag tells D-Bus that other applications (like KDE Plasma) can replace our ownership of these services without conflicts. When switching back to gaming mode and KDE releases the names, the plugin automatically re-registers them. This provides a clean, conflict-free transition between modes.
 
 
 ### Compatible application
