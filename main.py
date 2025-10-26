@@ -161,6 +161,11 @@ class PortalSettingsInterface(ServiceInterface):
     def __init__(self):
         super().__init__('org.freedesktop.portal.Settings')
     
+    @dbus_property()
+    def version(self) -> 'u':
+        """Return the interface version"""
+        return 1
+    
     @method()
     async def Read(self, namespace: 's', key: 's') -> 'v':
         """Read a single setting value"""
