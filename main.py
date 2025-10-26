@@ -23,7 +23,7 @@ settings = SettingsManager(name="settings", settings_directory=settings_dir)
 event_queue = queue.Queue()
 
 from dbus_next.aio import MessageBus
-from dbus_next import Message, MessageType
+from dbus_next import Message, MessageType, Variant
 from dbus_next.service import ServiceInterface, method, dbus_property, signal
 bus = None
 
@@ -156,6 +156,25 @@ class PortalInhibitInterface(BaseInterface):
         # Return the object path as required by the portal interface
         return request_path
 
+class PortalSettingsInterface(ServiceInterface):
+    """Implements org.freedesktop.portal.Settings for portal settings access"""
+    def __init__(self):
+        super().__init__('org.freedesktop.portal.Settings')
+    
+    @method()
+    async def Read(self, namespace: 's', key: 's') -> 'v':
+        """Read a single setting value"""
+        # Return empty variant for any requested setting
+        # This prevents errors but doesn't provide actual settings
+        return Variant('s', '')
+    
+    @method()
+    async def ReadAll(self, namespaces: 'as') -> 'a{sa{sv}}':
+        """Read all settings for given namespaces"""
+        # Return empty dict for all namespaces
+        # This satisfies the interface but provides no actual settings
+        return {}
+
 async def stop_dbus():
     global bus
     try:
@@ -174,11 +193,13 @@ async def start_dbus():
         pm_interface = PMInhibitInterface()
         gnome_interface = GnomeInterface()
         portal_interface = PortalInhibitInterface()
+        portal_settings_interface = PortalSettingsInterface()
         bus.export('/ScreenSaver', interface) # vlc
         bus.export('/org/freedesktop/ScreenSaver', interface) # chrome
         bus.export('/org/freedesktop/PowerManagement/Inhibit', pm_interface) # wiliwili
         bus.export('/org/gnome/SessionManager', gnome_interface) # mpv with https://github.com/Guldoman/mpv_inhibit_gnome installed
-        bus.export('/org/freedesktop/portal/desktop', portal_interface) # firefox
+        bus.export('/org/freedesktop/portal/desktop', portal_interface) # firefox inhibit
+        bus.export('/org/freedesktop/portal/desktop', portal_settings_interface) # firefox settings
         await bus.request_name('org.freedesktop.PowerManagement')
         await bus.request_name('org.freedesktop.ScreenSaver')
         await bus.request_name('org.gnome.SessionManager')
