@@ -22,4 +22,5 @@ This plugin registers and monitors the missing D-Bus services in game mode, auto
 ### Compatible application
 - [x] VLC
 - [x] Chrome
+- [x] Firefox
 - [x] mpv (Works out-of-the-box with the Flathub build; all other packages require [mpv_inhibit_gnome](https://github.com/Guldoman/mpv_inhibit_gnome))

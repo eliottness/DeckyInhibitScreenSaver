@@ -23,7 +23,7 @@ settings = SettingsManager(name="settings", settings_directory=settings_dir)
 event_queue = queue.Queue()
 
 from dbus_next.aio import MessageBus
-from dbus_next import Message, MessageType
+from dbus_next import Message, MessageType, Variant
 from dbus_next.service import ServiceInterface, method, dbus_property, signal
 bus = None
 
@@ -108,6 +108,78 @@ class GnomeInterface(BaseInterface):
     async def Uninhibit(self, cookie: 'u'):
         return await self._un_inhibit_impl(cookie)
 
+class PortalRequestInterface(ServiceInterface):
+    """Implements org.freedesktop.portal.Request for handling inhibit request lifecycle"""
+    def __init__(self, cookie):
+        super().__init__('org.freedesktop.portal.Request')
+        self.cookie = cookie
+    
+    @method()
+    async def Close(self):
+        """Called by the client to cancel the inhibit request"""
+        decky_plugin.logger.info(f'Portal Request Close called for cookie={self.cookie}')
+        # Remove the inhibit request
+        if BaseInterface.request_map.pop(self.cookie, None) is None:
+            decky_plugin.logger.info(f'cannot find cookie={self.cookie}')
+        if len(BaseInterface.request_map) == 0:
+            event_queue.put({"type": "UnInhibit"})
+        # Unexport this request object
+        if bus is not None:
+            path = f'/org/freedesktop/portal/desktop/request/{self.cookie}'
+            try:
+                bus.unexport(path)
+            except Exception as e:
+                decky_plugin.logger.info(f'Error unexporting request object: {e}')
+
+class PortalInhibitInterface(BaseInterface):
+    def __init__(self):
+        super().__init__('org.freedesktop.portal.Inhibit')
+    
+    @method()
+    async def Inhibit(self, window: 's', flags: 'u', options: 'a{sv}') -> 'o':
+        # Extract application name from options if available
+        application = "Firefox"
+        reason = "video playback"
+        
+        # Check if options contains app_id or reason
+        if options:
+            if 'app_id' in options:
+                application = str(options['app_id'].value)
+            if 'reason' in options:
+                reason = str(options['reason'].value)
+        
+        cookie = await self._inhibit_impl(application, reason)
+        # Create and export a Request object for this inhibit session
+        request_path = f'/org/freedesktop/portal/desktop/request/{cookie}'
+        request_interface = PortalRequestInterface(cookie)
+        bus.export(request_path, request_interface)
+        # Return the object path as required by the portal interface
+        return request_path
+
+class PortalSettingsInterface(ServiceInterface):
+    """Implements org.freedesktop.portal.Settings for portal settings access"""
+    def __init__(self):
+        super().__init__('org.freedesktop.portal.Settings')
+    
+    @dbus_property()
+    def version(self) -> 'u':
+        """Return the interface version"""
+        return 1
+    
+    @method()
+    async def Read(self, namespace: 's', key: 's') -> 'v':
+        """Read a single setting value"""
+        # Return empty variant for any requested setting
+        # This prevents errors but doesn't provide actual settings
+        return Variant('s', '')
+    
+    @method()
+    async def ReadAll(self, namespaces: 'as') -> 'a{sa{sv}}':
+        """Read all settings for given namespaces"""
+        # Return empty dict for all namespaces
+        # This satisfies the interface but provides no actual settings
+        return {}
+
 async def stop_dbus():
     global bus
     try:
@@ -125,13 +197,18 @@ async def start_dbus():
         interface = InhibitInterface()
         pm_interface = PMInhibitInterface()
         gnome_interface = GnomeInterface()
+        portal_interface = PortalInhibitInterface()
+        portal_settings_interface = PortalSettingsInterface()
         bus.export('/ScreenSaver', interface) # vlc
         bus.export('/org/freedesktop/ScreenSaver', interface) # chrome
         bus.export('/org/freedesktop/PowerManagement/Inhibit', pm_interface) # wiliwili
         bus.export('/org/gnome/SessionManager', gnome_interface) # mpv with https://github.com/Guldoman/mpv_inhibit_gnome installed
+        bus.export('/org/freedesktop/portal/desktop', portal_interface) # firefox inhibit
+        bus.export('/org/freedesktop/portal/desktop', portal_settings_interface) # firefox settings
         await bus.request_name('org.freedesktop.PowerManagement')
         await bus.request_name('org.freedesktop.ScreenSaver')
         await bus.request_name('org.gnome.SessionManager')
+        await bus.request_name('org.freedesktop.portal.Desktop')
     except Exception as e:
         decky_plugin.logger.info(f"error: {e}")
 
