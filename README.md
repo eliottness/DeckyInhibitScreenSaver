@@ -23,3 +23,5 @@ This plugin registers and monitors the missing D-Bus services in game mode, auto
 - [x] VLC
 - [x] Chrome
 - [x] mpv (Works out-of-the-box with the Flathub build; all other packages require [mpv_inhibit_gnome](https://github.com/Guldoman/mpv_inhibit_gnome))
+- [x] Firefox (Works out-of-the-box. If inhibition still fails, set `widget.use-xdg-desktop-portal.inhibit=0` in `about:config` to skip the portal and use `org.freedesktop.ScreenSaver` directly)
+- [x] Kodi (Works with the Flathub build on SteamOS game mode; gamescope does not support the Wayland idle-inhibit protocol so Kodi automatically falls back to D-Bus via `org.freedesktop.ScreenSaver`)

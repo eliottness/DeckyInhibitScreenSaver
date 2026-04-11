@@ -1,3 +1,4 @@
+import asyncio
 import decky_plugin
 import queue
 from settings import SettingsManager
@@ -25,7 +26,10 @@ event_queue = queue.Queue()
 from dbus_next.aio import MessageBus
 from dbus_next import Message, MessageType
 from dbus_next.service import ServiceInterface, method, dbus_property, signal
+from dbus_next.constants import NameFlag, RequestNameReply
 bus = None
+_simulate_task = None
+_simulate_cookie = None
 
 class AppRequest:
     def __init__(self, sender, cookie, application, reason):
@@ -35,6 +39,8 @@ class AppRequest:
         self.reason = reason
     
     async def is_connected(self):
+        if not self.sender:
+            return True  # timer-based request (e.g. SimulateUserActivity), always connected
         global bus
         message = Message(
             destination='org.freedesktop.DBus',
@@ -84,6 +90,39 @@ class InhibitInterface(BaseInterface):
     async def UnInhibit(self, cookie: 'u'):
         return await self._un_inhibit_impl(cookie)
 
+    @method()
+    async def GetActive(self) -> 'b':
+        return False
+
+    @method()
+    async def SimulateUserActivity(self):
+        global _simulate_task, _simulate_cookie
+        decky_plugin.logger.info('SimulateUserActivity called')
+        real_inhibitors = {k: v for k, v in BaseInterface.request_map.items() if k != _simulate_cookie}
+        if real_inhibitors:
+            return
+        if _simulate_task and not _simulate_task.done():
+            _simulate_task.cancel()
+        if _simulate_cookie is None or _simulate_cookie not in BaseInterface.request_map:
+            event_queue.put({"type": "Inhibit"})
+            BaseInterface.cookie += 1
+            _simulate_cookie = BaseInterface.cookie
+            BaseInterface.request_map[_simulate_cookie] = AppRequest('', _simulate_cookie, 'SimulateUserActivity', 'Simulated activity')
+
+        async def auto_uninhibit():
+            global _simulate_cookie
+            try:
+                await asyncio.sleep(90)
+            except asyncio.CancelledError:
+                return
+            if _simulate_cookie is not None and _simulate_cookie in BaseInterface.request_map:
+                BaseInterface.request_map.pop(_simulate_cookie)
+                _simulate_cookie = None
+                if len(BaseInterface.request_map) == 0:
+                    event_queue.put({"type": "UnInhibit"})
+
+        _simulate_task = asyncio.ensure_future(auto_uninhibit())
+
 class PMInhibitInterface(BaseInterface):
     def __init__(self):
         super().__init__('org.freedesktop.PowerManagement.Inhibit')
@@ -108,6 +147,79 @@ class GnomeInterface(BaseInterface):
     async def Uninhibit(self, cookie: 'u'):
         return await self._un_inhibit_impl(cookie)
 
+class PortalRequestInterface(ServiceInterface):
+    """Implements org.freedesktop.portal.Request for portal inhibit handles.
+    Used by Firefox's FreeDesktopPortal wake lock path."""
+    def __init__(self, cookie, handle_path):
+        super().__init__('org.freedesktop.portal.Request')
+        self.cookie = cookie
+        self.handle_path = handle_path
+
+    @signal()
+    def Response(self) -> 'ua{sv}':
+        return [0, {}]
+
+    @method()
+    async def Close(self):
+        decky_plugin.logger.info(f'PortalRequest.Close called for cookie={self.cookie}')
+        if self.cookie in BaseInterface.request_map:
+            BaseInterface.request_map.pop(self.cookie, None)
+            if len(BaseInterface.request_map) == 0:
+                event_queue.put({"type": "UnInhibit"})
+        global bus
+        if bus:
+            try:
+                bus.unexport(self.handle_path, self)
+            except Exception as e:
+                decky_plugin.logger.info(f'PortalRequest unexport error: {e}')
+
+class PortalInhibitInterface(BaseInterface):
+    """Implements org.freedesktop.portal.Inhibit on org.freedesktop.portal.Desktop.
+    Firefox tries this interface first (before org.freedesktop.ScreenSaver)."""
+    _handle_counter = 0
+
+    def __init__(self):
+        super().__init__('org.freedesktop.portal.Inhibit')
+
+    @method()
+    async def Inhibit(self, parent_window: 's', flags: 'u', options: 'a{sv}') -> 'o':
+        # flags: 1=Logout, 2=UserSwitch, 4=Suspend, 8=Idle
+        reasons = []
+        if flags & 4:
+            reasons.append('Suspend')
+        if flags & 8:
+            reasons.append('Idle')
+        reason = ', '.join(reasons) if reasons else 'Inhibit'
+
+        sender = ServiceInterface.last_msg.sender
+        sender_safe = sender.lstrip(':').replace('.', '_')
+
+        PortalInhibitInterface._handle_counter += 1
+        handle_token = f'inhibit{PortalInhibitInterface._handle_counter}'
+        if 'handle_token' in options:
+            token_var = options['handle_token']
+            if hasattr(token_var, 'value'):
+                handle_token = str(token_var.value)
+
+        handle = f'/org/freedesktop/portal/desktop/request/{sender_safe}/{handle_token}'
+
+        cookie = await self._inhibit_impl('Portal', reason)
+        if cookie == 0:
+            return handle  # application was in ignore list
+
+        global bus
+        if bus:
+            request_iface = PortalRequestInterface(cookie, handle)
+            bus.export(handle, request_iface)
+
+            async def emit_response():
+                await asyncio.sleep(0)
+                request_iface.Response()
+
+            asyncio.ensure_future(emit_response())
+
+        return handle
+
 async def stop_dbus():
     global bus
     try:
@@ -126,12 +238,25 @@ async def start_dbus():
         pm_interface = PMInhibitInterface()
         gnome_interface = GnomeInterface()
         bus.export('/ScreenSaver', interface) # vlc
-        bus.export('/org/freedesktop/ScreenSaver', interface) # chrome
+        bus.export('/org/freedesktop/ScreenSaver', interface) # chrome, kodi
         bus.export('/org/freedesktop/PowerManagement/Inhibit', pm_interface) # wiliwili
         bus.export('/org/gnome/SessionManager', gnome_interface) # mpv with https://github.com/Guldoman/mpv_inhibit_gnome installed
         await bus.request_name('org.freedesktop.PowerManagement')
         await bus.request_name('org.freedesktop.ScreenSaver')
         await bus.request_name('org.gnome.SessionManager')
+        # Try to register as org.freedesktop.portal.Desktop so Firefox can use its
+        # preferred portal-based inhibit path (tried before org.freedesktop.ScreenSaver).
+        # Skip gracefully if another portal service already owns the name.
+        portal_interface = PortalInhibitInterface()
+        try:
+            portal_reply = await bus.request_name('org.freedesktop.portal.Desktop', NameFlag.DO_NOT_QUEUE)
+            if portal_reply == RequestNameReply.PRIMARY_OWNER:
+                bus.export('/org/freedesktop/portal/desktop', portal_interface)
+                decky_plugin.logger.info('Registered as org.freedesktop.portal.Desktop (Firefox portal path)')
+            else:
+                decky_plugin.logger.info(f'Portal name not available (reply={portal_reply}), skipping portal interface')
+        except Exception as e:
+            decky_plugin.logger.info(f'Could not register portal interface: {e}')
     except Exception as e:
         decky_plugin.logger.info(f"error: {e}")
 
